@@ -58,7 +58,11 @@ jobs:
                       if len(d) < 250:
                           fail.append(t); continue
                       ix = d.index.tz_localize(None) if d.index.tz else d.index
-                      o = pd.DataFrame({"date": ix, "close": d["Close"].values,
+                      o = pd.DataFrame({"date": ix,
+                                        "open": d["Open"].values,
+                                        "high": d["High"].values,
+                                        "low": d["Low"].values,
+                                        "close": d["Close"].values,
                                         "volume": d["Volume"].values})
                       o.to_csv(f"data/stocks/{t}.csv", index=False)
                       man[t] = {"n": len(o), "von": str(o.date.iloc[0].date()),
@@ -79,4 +83,5 @@ jobs:
           git config user.email actions@github.com
           git add data/
           git diff --staged --quiet || git commit -m "Aktien $(date -u +%F)"
+          git pull --rebase --autostash
           git push
