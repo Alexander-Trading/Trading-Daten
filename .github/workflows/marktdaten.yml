@@ -11,6 +11,7 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,76 +24,53 @@ jobs:
           python - <<'PY'
           import os, json, time
           from datetime import datetime, timezone
-          import pandas as pd, requests, yfinance as yf
+          import pandas as pd, yfinance as yf
 
           ETFS = ["SPY","QQQ","EWG","EFA","EEM","IWM","EWJ","FEZ",
-                  "TLT","IEF","SHY","LQD","HYG","TIP",
+                  "TLT","IEF","SHY","LQD","HYG","TIP","BND","EMB",
                   "GLD","SLV","USO","DBA","DBC","DBB",
-                  "VNQ","UUP","FXE","FXY"]
-          CRYPTO = ["BTCUSDT","ETHUSDT","BNBUSDT","XRPUSDT","ADAUSDT","SOLUSDT",
-                    "DOGEUSDT","LTCUSDT","LINKUSDT","AVAXUSDT","DOTUSDT",
-                    "ATOMUSDT","ETCUSDT","BCHUSDT","XLMUSDT"]
+                  "VNQ","RWX","UUP","FXE","FXY","FXB","FXA",
+                  "XLK","XLF","XLE","XLV","XLI","XLP","XLY","XLU","XLB",
+                  "PFF","JNK","BKLN","MUB","VYM","SDY","DVY","SCHD"]
 
           os.makedirs("data/etf", exist_ok=True)
-          os.makedirs("data/crypto", exist_ok=True)
-          man = {"aktualisiert": datetime.now(timezone.utc).isoformat(),
-                 "etf": {}, "crypto": {}}
+          man = {"aktualisiert": datetime.now(timezone.utc).isoformat(), "etf": {}}
 
           for t in ETFS:
               try:
-                  d = yf.download(t, start="1995-01-01", interval="1d",
-                                  auto_adjust=True, progress=False)
+                  tk = yf.Ticker(t)
+                  d = tk.history(start="1995-01-01", interval="1d", auto_adjust=True)
                   if d is None or len(d) < 300:
-                      continue
-                  if isinstance(d.columns, pd.MultiIndex):
-                      d.columns = d.columns.get_level_values(0)
+                      print("skip", t); continue
+                  raw = tk.history(start="1995-01-01", interval="1d", auto_adjust=False)
+
                   ix = d.index.tz_localize(None) if d.index.tz else d.index
-                  o = pd.DataFrame({"date": ix, "open": d["Open"].values,
-                                    "high": d["High"].values, "low": d["Low"].values,
-                                    "close": d["Close"].values, "volume": d["Volume"].values})
+                  div = raw["Dividends"].reindex(d.index).fillna(0.0) if "Dividends" in raw.columns else pd.Series(0.0, index=d.index)
+                  unadj = raw["Close"].reindex(d.index) if "Close" in raw.columns else d["Close"]
+
+                  o = pd.DataFrame({
+                      "date": ix,
+                      "open": d["Open"].values,
+                      "high": d["High"].values,
+                      "low": d["Low"].values,
+                      "close": d["Close"].values,
+                      "volume": d["Volume"].values,
+                      "dividend": div.values,
+                      "unadj_close": unadj.values,
+                  })
                   o.to_csv(f"data/etf/{t}.csv", index=False)
-                  man["etf"][t] = {"n": len(o), "von": str(o.date.iloc[0].date()),
-                                   "bis": str(o.date.iloc[-1].date())}
-                  print(t, len(o))
+                  man["etf"][t] = {"n": len(o),
+                                   "von": str(o.date.iloc[0].date()),
+                                   "bis": str(o.date.iloc[-1].date()),
+                                   "div_summe": float(o.dividend.sum())}
+                  print(t, len(o), "div:", round(float(o.dividend.sum()), 2))
               except Exception as e:
                   print("FEHLER", t, e)
-              time.sleep(0.3)
+              time.sleep(0.5)
 
-          for s in CRYPTO:
-              try:
-                  ms = int(pd.Timestamp("2017-01-01", tz="UTC").timestamp()*1000)
-                  rows = []
-                  while True:
-                      r = requests.get("https://api.binance.com/api/v3/klines",
-                                       params={"symbol": s, "interval": "1d",
-                                               "startTime": ms, "limit": 1000}, timeout=30)
-                      r.raise_for_status()
-                      b = r.json()
-                      if not b:
-                          break
-                      rows += b
-                      if len(b) < 1000:
-                          break
-                      ms = b[-1][0] + 1
-                      time.sleep(0.2)
-                  if len(rows) < 300:
-                      continue
-                  d = pd.DataFrame(rows, columns=["t","open","high","low","close",
-                                                  "volume","ct","q","n","a","b","i"])
-                  o = pd.DataFrame({
-                      "date": pd.to_datetime(d["t"], unit="ms", utc=True).dt.tz_localize(None),
-                      "open": d["open"].astype(float), "high": d["high"].astype(float),
-                      "low": d["low"].astype(float), "close": d["close"].astype(float),
-                      "volume": d["volume"].astype(float)}).iloc[:-1]
-                  o.to_csv(f"data/crypto/{s}.csv", index=False)
-                  man["crypto"][s] = {"n": len(o), "von": str(o.date.iloc[0].date()),
-                                      "bis": str(o.date.iloc[-1].date())}
-                  print(s, len(o))
-              except Exception as e:
-                  print("FEHLER", s, e)
-
-          json.dump(man, open("data/MANIFEST.json","w"), indent=2)
-          print("fertig:", len(man["etf"]), "ETFs,", len(man["crypto"]), "Krypto")
+          os.makedirs("data", exist_ok=True)
+          json.dump(man, open("data/MANIFEST.json", "w"), indent=2)
+          print("fertig:", len(man["etf"]), "ETFs")
           PY
 
       - name: Committen
