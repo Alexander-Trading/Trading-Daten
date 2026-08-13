@@ -79,4 +79,5 @@ jobs:
           git config user.email actions@github.com
           git add data/
           git diff --staged --quiet || git commit -m "Daten $(date -u +%F)"
+          git pull --rebase --autostash
           git push
