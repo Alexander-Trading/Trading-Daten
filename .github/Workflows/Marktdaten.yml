@@ -1,0 +1,104 @@
+name: Marktdaten
+
+on:
+  schedule:
+    - cron: "0 23 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install yfinance pandas requests
+
+      - name: Daten holen
+        run: |
+          python - <<'PY'
+          import os, json, time
+          from datetime import datetime, timezone
+          import pandas as pd, requests, yfinance as yf
+
+          ETFS = ["SPY","QQQ","EWG","EFA","EEM","IWM","EWJ","FEZ",
+                  "TLT","IEF","SHY","LQD","HYG","TIP",
+                  "GLD","SLV","USO","DBA","DBC","DBB",
+                  "VNQ","UUP","FXE","FXY"]
+          CRYPTO = ["BTCUSDT","ETHUSDT","BNBUSDT","XRPUSDT","ADAUSDT","SOLUSDT",
+                    "DOGEUSDT","LTCUSDT","LINKUSDT","AVAXUSDT","DOTUSDT",
+                    "ATOMUSDT","ETCUSDT","BCHUSDT","XLMUSDT"]
+
+          os.makedirs("data/etf", exist_ok=True)
+          os.makedirs("data/crypto", exist_ok=True)
+          man = {"aktualisiert": datetime.now(timezone.utc).isoformat(),
+                 "etf": {}, "crypto": {}}
+
+          for t in ETFS:
+              try:
+                  d = yf.download(t, start="1995-01-01", interval="1d",
+                                  auto_adjust=True, progress=False)
+                  if d is None or len(d) < 300:
+                      continue
+                  if isinstance(d.columns, pd.MultiIndex):
+                      d.columns = d.columns.get_level_values(0)
+                  ix = d.index.tz_localize(None) if d.index.tz else d.index
+                  o = pd.DataFrame({"date": ix, "open": d["Open"].values,
+                                    "high": d["High"].values, "low": d["Low"].values,
+                                    "close": d["Close"].values, "volume": d["Volume"].values})
+                  o.to_csv(f"data/etf/{t}.csv", index=False)
+                  man["etf"][t] = {"n": len(o), "von": str(o.date.iloc[0].date()),
+                                   "bis": str(o.date.iloc[-1].date())}
+                  print(t, len(o))
+              except Exception as e:
+                  print("FEHLER", t, e)
+              time.sleep(0.3)
+
+          for s in CRYPTO:
+              try:
+                  ms = int(pd.Timestamp("2017-01-01", tz="UTC").timestamp()*1000)
+                  rows = []
+                  while True:
+                      r = requests.get("https://api.binance.com/api/v3/klines",
+                                       params={"symbol": s, "interval": "1d",
+                                               "startTime": ms, "limit": 1000}, timeout=30)
+                      r.raise_for_status()
+                      b = r.json()
+                      if not b:
+                          break
+                      rows += b
+                      if len(b) < 1000:
+                          break
+                      ms = b[-1][0] + 1
+                      time.sleep(0.2)
+                  if len(rows) < 300:
+                      continue
+                  d = pd.DataFrame(rows, columns=["t","open","high","low","close",
+                                                  "volume","ct","q","n","a","b","i"])
+                  o = pd.DataFrame({
+                      "date": pd.to_datetime(d["t"], unit="ms", utc=True).dt.tz_localize(None),
+                      "open": d["open"].astype(float), "high": d["high"].astype(float),
+                      "low": d["low"].astype(float), "close": d["close"].astype(float),
+                      "volume": d["volume"].astype(float)}).iloc[:-1]
+                  o.to_csv(f"data/crypto/{s}.csv", index=False)
+                  man["crypto"][s] = {"n": len(o), "von": str(o.date.iloc[0].date()),
+                                      "bis": str(o.date.iloc[-1].date())}
+                  print(s, len(o))
+              except Exception as e:
+                  print("FEHLER", s, e)
+
+          json.dump(man, open("data/MANIFEST.json","w"), indent=2)
+          print("fertig:", len(man["etf"]), "ETFs,", len(man["crypto"]), "Krypto")
+          PY
+
+      - name: Committen
+        run: |
+          git config user.name datafeed-bot
+          git config user.email actions@github.com
+          git add data/
+          git diff --staged --quiet || git commit -m "Daten $(date -u +%F)"
+          git push
