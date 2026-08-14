@@ -1,11 +1,11 @@
 {
-  "aktualisiert": "2026-08-14T12:24:42.264618+00:00",
+  "aktualisiert": "2026-08-14T23:50:01.354789+00:00",
   "serien": {
     "GOLD_FUT_1d": {
       "ticker": "GC=F",
       "interval": "1d",
       "bars": 6513,
-      "neu": 6513,
+      "neu": 0,
       "von": "2000-08-30 00:00:00+00:00",
       "bis": "2026-08-14 00:00:00+00:00",
       "datei": "data/fx/GOLD_FUT_1d.csv"
@@ -13,19 +13,19 @@
     "GOLD_FUT_1h": {
       "ticker": "GC=F",
       "interval": "1h",
-      "bars": 13727,
-      "neu": 13727,
+      "bars": 13736,
+      "neu": 9,
       "von": "2024-03-22 04:00:00+00:00",
-      "bis": "2026-08-14 12:00:00+00:00",
+      "bis": "2026-08-14 21:00:00+00:00",
       "datei": "data/fx/GOLD_FUT_1h.csv"
     },
     "GOLD_FUT_15m": {
       "ticker": "GC=F",
       "interval": "15m",
-      "bars": 4575,
-      "neu": 4575,
+      "bars": 4611,
+      "neu": 36,
       "von": "2026-06-04 04:00:00+00:00",
-      "bis": "2026-08-14 12:00:00+00:00",
+      "bis": "2026-08-14 21:00:00+00:00",
       "datei": "data/fx/GOLD_FUT_15m.csv"
     },
     "GOLD_SPOT_1d": {
@@ -41,7 +41,7 @@
       "ticker": "EURUSD=X",
       "interval": "1d",
       "bars": 5891,
-      "neu": 5891,
+      "neu": 0,
       "von": "2003-12-01 00:00:00+00:00",
       "bis": "2026-08-14 00:00:00+00:00",
       "datei": "data/fx/EURUSD_1d.csv"
@@ -49,26 +49,26 @@
     "EURUSD_1h": {
       "ticker": "EURUSD=X",
       "interval": "1h",
-      "bars": 17230,
-      "neu": 17230,
+      "bars": 17239,
+      "neu": 9,
       "von": "2023-10-30 00:00:00+00:00",
-      "bis": "2026-08-14 12:00:00+00:00",
+      "bis": "2026-08-14 21:00:00+00:00",
       "datei": "data/fx/EURUSD_1h.csv"
     },
     "EURUSD_15m": {
       "ticker": "EURUSD=X",
       "interval": "15m",
-      "bars": 5652,
-      "neu": 5652,
+      "bars": 5688,
+      "neu": 36,
       "von": "2026-05-24 23:00:00+00:00",
-      "bis": "2026-08-14 12:15:00+00:00",
+      "bis": "2026-08-14 21:15:00+00:00",
       "datei": "data/fx/EURUSD_15m.csv"
     },
     "EURUSD_ALT_1d": {
       "ticker": "EUR=X",
       "interval": "1d",
       "bars": 5891,
-      "neu": 5891,
+      "neu": 0,
       "von": "2003-12-01 00:00:00+00:00",
       "bis": "2026-08-14 00:00:00+00:00",
       "datei": "data/fx/EURUSD_ALT_1d.csv"
@@ -76,19 +76,19 @@
     "EURUSD_ALT_1h": {
       "ticker": "EUR=X",
       "interval": "1h",
-      "bars": 17230,
-      "neu": 17230,
+      "bars": 17239,
+      "neu": 9,
       "von": "2023-10-30 00:00:00+00:00",
-      "bis": "2026-08-14 12:00:00+00:00",
+      "bis": "2026-08-14 21:00:00+00:00",
       "datei": "data/fx/EURUSD_ALT_1h.csv"
     },
     "EURUSD_ALT_15m": {
       "ticker": "EUR=X",
       "interval": "15m",
-      "bars": 5652,
-      "neu": 5652,
+      "bars": 5688,
+      "neu": 36,
       "von": "2026-05-24 23:00:00+00:00",
-      "bis": "2026-08-14 12:15:00+00:00",
+      "bis": "2026-08-14 21:15:00+00:00",
       "datei": "data/fx/EURUSD_ALT_15m.csv"
     }
   }
