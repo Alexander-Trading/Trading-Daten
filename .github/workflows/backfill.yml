@@ -1,0 +1,139 @@
+name: Dukascopy Backfill (H1 ab 2003)
+
+on:
+  workflow_dispatch:
+    inputs:
+      von_jahr:
+        description: "Startjahr (EURUSD ab 2003, XAUUSD ab 2003)"
+        required: true
+        default: "2003"
+      bis_jahr:
+        description: "Endjahr (einschliesslich)"
+        required: true
+        default: "2026"
+      instrumente:
+        description: "Instrumente, durch Leerzeichen getrennt"
+        required: true
+        default: "eurusd xauusd"
+
+permissions:
+  contents: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: |
+          npm install -g dukascopy-node
+          pip install pandas
+
+      - name: Herunterladen
+        env:
+          VON:   ${{ github.event.inputs.von_jahr }}
+          BIS:   ${{ github.event.inputs.bis_jahr }}
+          INSTR: ${{ github.event.inputs.instrumente }}
+        run: |
+          mkdir -p roh
+          for INST in $INSTR; do
+            for PT in bid ask; do
+              for JAHR in $(seq $VON $BIS); do
+                ZIEL="roh/${INST}_${PT}_${JAHR}.csv"
+                if [ -f "$ZIEL" ]; then continue; fi
+                echo ">>> $INST $PT $JAHR"
+                dukascopy-node \
+                  -i "$INST" \
+                  -from "${JAHR}-01-01" \
+                  -to   "$([ "$JAHR" = "$BIS" ] && echo now || echo $((JAHR+1))-01-01)" \
+                  -t h1 -p "$PT" -f csv -v -fl \
+                  -dir roh -fn "${INST}_${PT}_${JAHR}.csv" \
+                  -r 5 -re -bs 10 -bp 800 --cache \
+                  --silent || echo "FEHLGESCHLAGEN: $INST $PT $JAHR (weiter)"
+                sleep 2
+              done
+            done
+          done
+          echo "=== Heruntergeladen ==="
+          ls -la roh/ | head -60
+
+      - name: Zusammenfuehren
+        run: |
+          python - <<'PY'
+          import glob, os, re
+          import pandas as pd
+
+          os.makedirs("data/fx", exist_ok=True)
+
+          def lade(pfad):
+              df = pd.read_csv(pfad)
+              df.columns = [c.strip().lower() for c in df.columns]
+              ts = df.columns[0]
+              try:
+                  df["ts"] = pd.to_datetime(df[ts].astype("int64"), unit="ms", utc=True)
+              except (ValueError, TypeError):
+                  df["ts"] = pd.to_datetime(df[ts], utc=True, errors="coerce")
+              return df.dropna(subset=["ts"])
+
+          instrumente = sorted({re.match(r"([a-z]+)_", os.path.basename(p)).group(1)
+                                for p in glob.glob("roh/*.csv")})
+
+          for inst in instrumente:
+              teile = {}
+              for pt in ("bid", "ask"):
+                  dateien = sorted(glob.glob(f"roh/{inst}_{pt}_*.csv"))
+                  if not dateien:
+                      continue
+                  df = pd.concat([lade(f) for f in dateien], ignore_index=True)
+                  spalten = [c for c in ["open","high","low","close","volume"] if c in df.columns]
+                  df = df[["ts"] + spalten].rename(columns={c: f"{pt}_{c}" for c in spalten})
+                  teile[pt] = df.drop_duplicates("ts", keep="last")
+
+              if not teile:
+                  continue
+
+              ges = list(teile.values())[0]
+              for pt, df in list(teile.items())[1:]:
+                  ges = ges.merge(df, on="ts", how="outer")
+              ges = ges.sort_values("ts").reset_index(drop=True)
+
+              if "bid_close" in ges and "ask_close" in ges:
+                  for feld in ("open","high","low","close"):
+                      ges[feld] = (ges[f"bid_{feld}"] + ges[f"ask_{feld}"]) / 2
+                  ges["spread"] = ges["ask_close"] - ges["bid_close"]
+
+              kurs = "close" if "close" in ges else "bid_close"
+              ges = ges[ges[kurs].notna() & (ges[kurs] > 0)]
+
+              pfad = f"data/fx/{inst.upper()}_h1.csv"
+              if os.path.exists(pfad):
+                  alt = pd.read_csv(pfad)
+                  alt["ts"] = pd.to_datetime(alt["ts"], utc=True, errors="coerce")
+                  ges = (pd.concat([alt, ges], ignore_index=True)
+                           .drop_duplicates("ts", keep="last")
+                           .sort_values("ts").reset_index(drop=True))
+
+              ges.to_csv(pfad, index=False)
+              print(f"{pfad}: {len(ges)} Bars | {ges.ts.min()} bis {ges.ts.max()}")
+          PY
+
+      - name: Commit
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/fx
+          if git diff --staged --quiet; then
+            echo "Keine Aenderungen."
+          else
+            git commit -m "Dukascopy H1 Backfill"
+            git push
+          fi
