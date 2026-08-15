@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       von_jahr:
-        description: "Startjahr (EURUSD ab 2003, XAUUSD ab 2003)"
+        description: "Startjahr"
         required: true
         default: "2003"
       bis_jahr:
@@ -38,7 +38,7 @@ jobs:
           npm install -g dukascopy-node
           pip install pandas
 
-      - name: Herunterladen
+      - name: Herunterladen (Durchgang 1)
         env:
           VON:   ${{ github.event.inputs.von_jahr }}
           BIS:   ${{ github.event.inputs.bis_jahr }}
@@ -49,7 +49,11 @@ jobs:
             for PT in bid ask; do
               for JAHR in $(seq $VON $BIS); do
                 ZIEL="roh/${INST}_${PT}_${JAHR}.csv"
-                if [ -f "$ZIEL" ]; then continue; fi
+                # WICHTIG: nur ueberspringen wenn die Datei auch INHALT hat
+                if [ -s "$ZIEL" ] && [ $(wc -c < "$ZIEL") -gt 1000 ]; then
+                  echo "vorhanden: $ZIEL"; continue
+                fi
+                rm -f "$ZIEL"
                 echo ">>> $INST $PT $JAHR"
                 dukascopy-node \
                   -i "$INST" \
@@ -57,14 +61,50 @@ jobs:
                   -to   "$([ "$JAHR" = "$BIS" ] && echo now || echo $((JAHR+1))-01-01)" \
                   -t h1 -p "$PT" -f csv -v -fl \
                   -dir roh -fn "${INST}_${PT}_${JAHR}.csv" \
-                  -r 5 -re -bs 10 -bp 800 --cache \
-                  --silent || echo "FEHLGESCHLAGEN: $INST $PT $JAHR (weiter)"
-                sleep 2
+                  -r 8 -re -bs 5 -bp 2000 --cache \
+                  --silent || echo "FEHLGESCHLAGEN: $INST $PT $JAHR"
+                sleep 5
               done
             done
           done
-          echo "=== Heruntergeladen ==="
-          ls -la roh/ | head -60
+
+      - name: Fehlende Jahre erneut versuchen (Durchgang 2)
+        env:
+          VON:   ${{ github.event.inputs.von_jahr }}
+          BIS:   ${{ github.event.inputs.bis_jahr }}
+          INSTR: ${{ github.event.inputs.instrumente }}
+        run: |
+          echo "=== Suche nach leeren Dateien ==="
+          NACHZUHOLEN=""
+          for INST in $INSTR; do
+            for PT in bid ask; do
+              for JAHR in $(seq $VON $BIS); do
+                ZIEL="roh/${INST}_${PT}_${JAHR}.csv"
+                if [ ! -s "$ZIEL" ] || [ $(wc -c < "$ZIEL") -lt 1000 ]; then
+                  NACHZUHOLEN="$NACHZUHOLEN ${INST}:${PT}:${JAHR}"
+                fi
+              done
+            done
+          done
+          if [ -z "$NACHZUHOLEN" ]; then echo "Nichts nachzuholen."; exit 0; fi
+          echo "Nachzuholen:$NACHZUHOLEN"
+          for EINTRAG in $NACHZUHOLEN; do
+            INST=$(echo $EINTRAG | cut -d: -f1)
+            PT=$(echo $EINTRAG | cut -d: -f2)
+            JAHR=$(echo $EINTRAG | cut -d: -f3)
+            echo ">>> ZWEITER VERSUCH: $INST $PT $JAHR"
+            rm -f "roh/${INST}_${PT}_${JAHR}.csv"
+            # kleinere Haeppchen, laengere Pausen
+            dukascopy-node \
+              -i "$INST" \
+              -from "${JAHR}-01-01" \
+              -to   "$([ "$JAHR" = "${{ github.event.inputs.bis_jahr }}" ] && echo now || echo $((JAHR+1))-01-01)" \
+              -t h1 -p "$PT" -f csv -v -fl \
+              -dir roh -fn "${INST}_${PT}_${JAHR}.csv" \
+              -r 10 -re -bs 3 -bp 4000 \
+              --silent || echo "ERNEUT FEHLGESCHLAGEN: $INST $PT $JAHR"
+            sleep 15
+          done
 
       - name: Rohdaten sichern
         if: always()
@@ -84,8 +124,8 @@ jobs:
           uebersprungen = []
 
           def lade(pfad):
-              if os.path.getsize(pfad) < 20:
-                  uebersprungen.append((pfad, "leer")); return None
+              if os.path.getsize(pfad) < 1000:
+                  uebersprungen.append((pfad, "leer/zu klein")); return None
               try:
                   df = pd.read_csv(pfad)
               except (pd.errors.EmptyDataError, pd.errors.ParserError) as e:
@@ -149,14 +189,26 @@ jobs:
 
               ges.to_csv(pfad, index=False)
               geschrieben += 1
-              msg = f"{pfad}: {len(ges)} Bars | {ges.ts.min()} bis {ges.ts.max()}"
-              if "spread" in ges:
-                  msg += f" | mittlerer Spread {ges['spread'].mean():.5f}"
-              print(msg)
+
+              # ABDECKUNGSBERICHT - das Entscheidende
+              proJahr = ges.ts.dt.year.value_counts().sort_index()
+              print(f"\n=== {pfad}: {len(ges)} Bars | {ges.ts.min()} bis {ges.ts.max()} ===")
+              luecken = []
+              for jahr in range(int(proJahr.index.min()), int(proJahr.index.max())+1):
+                  n = int(proJahr.get(jahr, 0))
+                  marke = ""
+                  if n < 3000:
+                      marke = "   <-- LUECKE!"
+                      luecken.append(jahr)
+                  print(f"   {jahr}: {n:5d} Bars{marke}")
+              if luecken:
+                  print(f"   !!! UNVOLLSTAENDIGE JAHRE: {luecken}")
+              else:
+                  print(f"   Alle Jahre vollstaendig.")
 
           if uebersprungen:
-              print(f"\n{len(uebersprungen)} Datei(en) uebersprungen (normal fuer Jahre ohne Daten):")
-              for p, grund in uebersprungen[:20]:
+              print(f"\n{len(uebersprungen)} Datei(en) uebersprungen:")
+              for p, grund in uebersprungen[:40]:
                   print(f"  {p} -> {grund}")
 
           if geschrieben == 0:
@@ -171,7 +223,6 @@ jobs:
           if git diff --staged --quiet; then
             echo "Keine Aenderungen."
           else
-            git commit -m "Dukascopy H1 Backfill"
+            git commit -m "Dukascopy H1 Backfill (mit Nachhol-Durchgang)"
             git push
           fi
-
