@@ -1,3 +1,29 @@
+# Dukascopy H1 Backfill mit Bid/Ask
+#
+# EMPFOHLENER ABLAUF - in Durchgaengen starten, nicht alles auf einmal.
+# Ein Job hat maximal 350 Minuten; ein Instrument ueber 23 Jahre braucht
+# grob 20-40 Minuten. Bereits vorhandene Dateien werden uebersprungen,
+# ein erneuter Lauf ist also gefahrlos.
+#
+#   Durchgang 1  (Kerntest, drei Anlageklassen):
+#       von 2003  bis 2026  ->  usdjpy usa500idxusd lightcmdusd
+#
+#   Durchgang 2  (weitere FX-Majors, volle Historie ab 2003):
+#       von 2003  bis 2026  ->  gbpusd usdchf usdcad
+#
+#   Durchgang 3  (Rohstoffwaehrung und Silber als Konsistenzpruefung):
+#       von 2003  bis 2026  ->  audusd xagusd
+#
+# VERFUEGBARKEIT (H1, Stand 2026-08):
+#   FX-Majors      ab 2003-05 bis 2003-08
+#   xagusd         ab 2003-05
+#   brentcmdusd    ab 2010-12
+#   usa500idxusd   ab 2011-09
+#   lightcmdusd    ab 2011-09
+#   usatechidxusd  ab 2011-09
+#   deuidxeur      ab 2013-09
+# Frueher gibt es keine H1-Daten. Jahre davor laufen leer durch - kein Fehler.
+
 name: Dukascopy Backfill (H1 ab 2003)
 
 on:
@@ -12,9 +38,9 @@ on:
         required: true
         default: "2026"
       instrumente:
-        description: "Instrumente, durch Leerzeichen getrennt"
+        description: "Instrumente, durch Leerzeichen getrennt (Dukascopy-Ticker)"
         required: true
-        default: "eurusd xauusd"
+        default: "usdjpy usa500idxusd lightcmdusd"
 
 permissions:
   contents: write
@@ -144,7 +170,7 @@ jobs:
               return df
 
           instrumente = sorted({m.group(1) for p in glob.glob("roh/*.csv")
-                                if (m := re.match(r"([a-z]+)_", os.path.basename(p)))})
+                                if (m := re.match(r"([a-z0-9]+)_(?:bid|ask)_", os.path.basename(p)))})
           print(f"Instrumente gefunden: {instrumente}")
 
           geschrieben = 0
@@ -197,7 +223,9 @@ jobs:
               for jahr in range(int(proJahr.index.min()), int(proJahr.index.max())+1):
                   n = int(proJahr.get(jahr, 0))
                   marke = ""
-                  if n < 3000:
+                  # Indizes und Rohstoffe handeln weniger Stunden als FX
+                  schwelle = 3000 if ("idx" not in inst and "cmd" not in inst) else 1500
+                  if n < schwelle:
                       marke = "   <-- LUECKE!"
                       luecken.append(jahr)
                   print(f"   {jahr}: {n:5d} Bars{marke}")
