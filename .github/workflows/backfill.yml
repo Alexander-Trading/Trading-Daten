@@ -1,9 +1,8 @@
 # Dukascopy H1 Backfill mit Bid/Ask
 #
-# EMPFOHLENER ABLAUF - in Durchgaengen starten, nicht alles auf einmal.
-# Ein Job hat maximal 350 Minuten; ein Instrument ueber 23 Jahre braucht
-# grob 20-40 Minuten. Bereits vorhandene Dateien werden uebersprungen,
-# ein erneuter Lauf ist also gefahrlos.
+# QUARTALSWEISER DOWNLOAD - kleinere Anfragen werden seltener abgeschnitten.
+# Vollstaendigkeit wird an der ZEILENZAHL geprueft, nicht an der Dateigroesse.
+# Bereits vollstaendige Quartale werden uebersprungen - erneuter Lauf ist gefahrlos.
 #
 #   Durchgang 1  (Kerntest, drei Anlageklassen):
 #       von 2003  bis 2026  ->  usdjpy usa500idxusd lightcmdusd
@@ -13,6 +12,10 @@
 #
 #   Durchgang 3  (Rohstoffwaehrung und Silber als Konsistenzpruefung):
 #       von 2003  bis 2026  ->  audusd xagusd
+#
+# ACHTUNG: 96 Anfragen je Instrument und Preisseite statt 24.
+# Bei 23 Jahren also rund 184 Anfragen pro Instrument.
+# LIEBER EIN INSTRUMENT PRO DURCHGANG.
 #
 # VERFUEGBARKEIT (H1, Stand 2026-08):
 #   FX-Majors      ab 2003-05 bis 2003-08
@@ -40,7 +43,7 @@ on:
       instrumente:
         description: "Instrumente, durch Leerzeichen getrennt (Dukascopy-Ticker)"
         required: true
-        default: "usdjpy usa500idxusd lightcmdusd"
+        default: "usdjpy"
 
 permissions:
   contents: write
@@ -64,72 +67,88 @@ jobs:
           npm install -g dukascopy-node
           pip install pandas
 
-      - name: Herunterladen (Durchgang 1)
+      - name: Herunterladen (quartalsweise)
         env:
           VON:   ${{ github.event.inputs.von_jahr }}
           BIS:   ${{ github.event.inputs.bis_jahr }}
           INSTR: ${{ github.event.inputs.instrumente }}
         run: |
           mkdir -p roh
+          # Quartalsweise statt jahresweise: kleinere Anfragen werden von
+          # Dukascopy deutlich seltener abgeschnitten.
           for INST in $INSTR; do
             for PT in bid ask; do
               for JAHR in $(seq $VON $BIS); do
-                ZIEL="roh/${INST}_${PT}_${JAHR}.csv"
-                # WICHTIG: nur ueberspringen wenn die Datei auch INHALT hat
-                if [ -s "$ZIEL" ] && [ $(wc -c < "$ZIEL") -gt 1000 ]; then
-                  echo "vorhanden: $ZIEL"; continue
-                fi
-                rm -f "$ZIEL"
-                echo ">>> $INST $PT $JAHR"
-                dukascopy-node \
-                  -i "$INST" \
-                  -from "${JAHR}-01-01" \
-                  -to   "$([ "$JAHR" = "$BIS" ] && echo now || echo $((JAHR+1))-01-01)" \
-                  -t h1 -p "$PT" -f csv -v -fl \
-                  -dir roh -fn "${INST}_${PT}_${JAHR}.csv" \
-                  -r 8 -re -bs 5 -bp 2000 --cache \
-                  --silent || echo "FEHLGESCHLAGEN: $INST $PT $JAHR"
-                sleep 5
+                for Q in 1 2 3 4; do
+                  case $Q in
+                    1) VONM="01-01"; BISM="04-01"; BISJ=$JAHR ;;
+                    2) VONM="04-01"; BISM="07-01"; BISJ=$JAHR ;;
+                    3) VONM="07-01"; BISM="10-01"; BISJ=$JAHR ;;
+                    4) VONM="10-01"; BISM="01-01"; BISJ=$((JAHR+1)) ;;
+                  esac
+                  ZIEL="roh/${INST}_${PT}_${JAHR}Q${Q}.csv"
+                  # Vollstaendigkeit an der ZEILENZAHL pruefen, nicht an der Dateigroesse.
+                  # Ein Quartal hat rund 1560 Handelsstunden; unter 900 ist es abgeschnitten.
+                  if [ -s "$ZIEL" ] && [ $(wc -l < "$ZIEL") -gt 900 ]; then
+                    echo "vollstaendig: $ZIEL ($(wc -l < "$ZIEL") Zeilen)"; continue
+                  fi
+                  rm -f "$ZIEL"
+                  echo ">>> $INST $PT ${JAHR}Q${Q}"
+                  dukascopy-node \
+                    -i "$INST" \
+                    -from "${JAHR}-${VONM}" \
+                    -to   "${BISJ}-${BISM}" \
+                    -t h1 -p "$PT" -f csv -v -fl \
+                    -dir roh -fn "${INST}_${PT}_${JAHR}Q${Q}.csv" \
+                    -r 8 -re -bs 5 -bp 2000 --cache \
+                    --silent || echo "FEHLGESCHLAGEN: $INST $PT ${JAHR}Q${Q}"
+                  sleep 3
+                done
               done
             done
           done
 
-      - name: Fehlende Jahre erneut versuchen (Durchgang 2)
+      - name: Unvollstaendige Quartale erneut versuchen
         env:
           VON:   ${{ github.event.inputs.von_jahr }}
           BIS:   ${{ github.event.inputs.bis_jahr }}
           INSTR: ${{ github.event.inputs.instrumente }}
         run: |
-          echo "=== Suche nach leeren Dateien ==="
+          echo "=== Suche nach unvollstaendigen Quartalen ==="
           NACHZUHOLEN=""
           for INST in $INSTR; do
             for PT in bid ask; do
               for JAHR in $(seq $VON $BIS); do
-                ZIEL="roh/${INST}_${PT}_${JAHR}.csv"
-                if [ ! -s "$ZIEL" ] || [ $(wc -c < "$ZIEL") -lt 1000 ]; then
-                  NACHZUHOLEN="$NACHZUHOLEN ${INST}:${PT}:${JAHR}"
-                fi
+                for Q in 1 2 3 4; do
+                  ZIEL="roh/${INST}_${PT}_${JAHR}Q${Q}.csv"
+                  if [ ! -s "$ZIEL" ] || [ $(wc -l < "$ZIEL") -lt 900 ]; then
+                    NACHZUHOLEN="$NACHZUHOLEN ${INST}:${PT}:${JAHR}:${Q}"
+                  fi
+                done
               done
             done
           done
-          if [ -z "$NACHZUHOLEN" ]; then echo "Nichts nachzuholen."; exit 0; fi
-          echo "Nachzuholen:$NACHZUHOLEN"
-          for EINTRAG in $NACHZUHOLEN; do
-            INST=$(echo $EINTRAG | cut -d: -f1)
-            PT=$(echo $EINTRAG | cut -d: -f2)
-            JAHR=$(echo $EINTRAG | cut -d: -f3)
-            echo ">>> ZWEITER VERSUCH: $INST $PT $JAHR"
-            rm -f "roh/${INST}_${PT}_${JAHR}.csv"
-            # kleinere Haeppchen, laengere Pausen
+          if [ -z "$NACHZUHOLEN" ]; then echo "Alles vollstaendig."; exit 0; fi
+          ANZ=$(echo $NACHZUHOLEN | wc -w)
+          echo "Nachzuholen: $ANZ Quartale"
+          for E in $NACHZUHOLEN; do
+            INST=$(echo $E | cut -d: -f1); PT=$(echo $E | cut -d: -f2)
+            JAHR=$(echo $E | cut -d: -f3); Q=$(echo $E | cut -d: -f4)
+            case $Q in
+              1) VONM="01-01"; BISM="04-01"; BISJ=$JAHR ;;
+              2) VONM="04-01"; BISM="07-01"; BISJ=$JAHR ;;
+              3) VONM="07-01"; BISM="10-01"; BISJ=$JAHR ;;
+              4) VONM="10-01"; BISM="01-01"; BISJ=$((JAHR+1)) ;;
+            esac
+            echo ">>> ZWEITER VERSUCH: $INST $PT ${JAHR}Q${Q}"
+            rm -f "roh/${INST}_${PT}_${JAHR}Q${Q}.csv"
             dukascopy-node \
-              -i "$INST" \
-              -from "${JAHR}-01-01" \
-              -to   "$([ "$JAHR" = "${{ github.event.inputs.bis_jahr }}" ] && echo now || echo $((JAHR+1))-01-01)" \
+              -i "$INST" -from "${JAHR}-${VONM}" -to "${BISJ}-${BISM}" \
               -t h1 -p "$PT" -f csv -v -fl \
-              -dir roh -fn "${INST}_${PT}_${JAHR}.csv" \
-              -r 10 -re -bs 3 -bp 4000 \
-              --silent || echo "ERNEUT FEHLGESCHLAGEN: $INST $PT $JAHR"
-            sleep 15
+              -dir roh -fn "${INST}_${PT}_${JAHR}Q${Q}.csv" \
+              -r 12 -re -bs 3 -bp 5000 \
+              --silent || echo "ERNEUT FEHLGESCHLAGEN: $INST $PT ${JAHR}Q${Q}"
+            sleep 10
           done
 
       - name: Rohdaten sichern
@@ -170,14 +189,15 @@ jobs:
               return df
 
           instrumente = sorted({m.group(1) for p in glob.glob("roh/*.csv")
-                                if (m := re.match(r"([a-z0-9]+)_(?:bid|ask)_", os.path.basename(p)))})
+                                if (m := re.match(r"([a-z0-9]+)_(?:bid|ask)_\d{4}Q\d", os.path.basename(p)))})
           print(f"Instrumente gefunden: {instrumente}")
 
           geschrieben = 0
+          schwere_luecken = []
           for inst in instrumente:
               teile = {}
               for pt in ("bid", "ask"):
-                  frames = [d for f in sorted(glob.glob(f"roh/{inst}_{pt}_*.csv"))
+                  frames = [d for f in sorted(glob.glob(f"roh/{inst}_{pt}_*Q*.csv"))
                             if (d := lade(f)) is not None]
                   if not frames:
                       continue
@@ -199,6 +219,11 @@ jobs:
                       if f"bid_{feld}" in ges and f"ask_{feld}" in ges:
                           ges[feld] = (ges[f"bid_{feld}"] + ges[f"ask_{feld}"]) / 2
                   ges["spread"] = ges["ask_close"] - ges["bid_close"]
+                  # fehlerhafte Bars mit Spread <= 0 entfernen
+                  vorher = len(ges)
+                  ges = ges[ges["spread"] > 0]
+                  if vorher != len(ges):
+                      print(f"{inst}: {vorher-len(ges)} Bars mit Spread <= 0 entfernt")
 
               kurs = "close" if "close" in ges else ("bid_close" if "bid_close" in ges else "ask_close")
               ges = ges[ges[kurs].notna() & (ges[kurs] > 0)]
@@ -231,6 +256,7 @@ jobs:
                   print(f"   {jahr}: {n:5d} Bars{marke}")
               if luecken:
                   print(f"   !!! UNVOLLSTAENDIGE JAHRE: {luecken}")
+                  schwere_luecken.append((inst, luecken))
               else:
                   print(f"   Alle Jahre vollstaendig.")
 
@@ -241,6 +267,13 @@ jobs:
 
           if geschrieben == 0:
               raise SystemExit("Keine einzige Datei geschrieben - Download pruefen!")
+          if schwere_luecken:
+              print("\n" + "="*60)
+              print("WARNUNG: Diese Instrumente sind UNVOLLSTAENDIG:")
+              for inst, fehlend in schwere_luecken:
+                  print(f"  {inst}: {fehlend}")
+              print("Workflow erneut starten - vorhandene Quartale werden uebersprungen.")
+              print("="*60)
           PY
 
       - name: Commit
@@ -251,6 +284,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "Keine Aenderungen."
           else
-            git commit -m "Dukascopy H1 Backfill (mit Nachhol-Durchgang)"
+            git commit -m "Dukascopy H1 Backfill (quartalsweise, mit Nachholung)"
             git push
           fi
+
