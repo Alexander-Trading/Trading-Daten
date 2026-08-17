@@ -166,21 +166,25 @@ jobs:
           BIS:   ${{ github.event.inputs.bis_jahr }}
           INSTR: ${{ github.event.inputs.instrumente }}
         run: |
-          echo "=== Suche nach unvollstaendigen Quartalen ==="
+          # Bis zu drei Anlaeufe. Einzelne Quartale fallen bei Dukascopy
+          # zufaellig aus; ein einziger Nachholdurchgang reicht nicht.
+          for VERSUCH in 1 2 3; do
+          echo "=== Nachholdurchgang $VERSUCH ==="
           NACHZUHOLEN=""
           for INST in $INSTR; do
             for PT in bid ask; do
               for JAHR in $(seq $VON $BIS); do
                 for Q in 1 2 3 4; do
                   ZIEL="roh/${INST}_${PT}_${JAHR}Q${Q}.csv"
-                  if [ ! -s "$ZIEL" ] || [ $(wc -l < "$ZIEL") -lt 700 ]; then
+                  if [ "$PT" = "bid" ]; then GEGEN="roh/${INST}_ask_${JAHR}Q${Q}.csv"; else GEGEN="roh/${INST}_bid_${JAHR}Q${Q}.csv"; fi
+                  if [ ! -s "$ZIEL" ] || [ $(wc -l < "$ZIEL") -lt 700 ] || [ ! -s "$GEGEN" ] || [ $(wc -l < "$GEGEN") -lt 700 ]; then
                     NACHZUHOLEN="$NACHZUHOLEN ${INST}:${PT}:${JAHR}:${Q}"
                   fi
                 done
               done
             done
           done
-          if [ -z "$NACHZUHOLEN" ]; then echo "Alles vollstaendig."; exit 0; fi
+          if [ -z "$NACHZUHOLEN" ]; then echo "Alles vollstaendig."; break; fi
           ANZ=$(echo $NACHZUHOLEN | wc -w)
           echo "Nachzuholen: $ANZ Quartale"
           for E in $NACHZUHOLEN; do
@@ -201,6 +205,7 @@ jobs:
               -r 12 -re -bs 3 -bp 5000 \
               --silent || echo "ERNEUT FEHLGESCHLAGEN: $INST $PT ${JAHR}Q${Q}"
             sleep 10
+          done
           done
 
       - name: Rohdaten sichern
