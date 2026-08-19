@@ -67,7 +67,7 @@ on:
       instrumente:
         description: "Instrumente, durch Leerzeichen getrennt (Dukascopy-Ticker)"
         required: true
-        default: "usdjpy usa500idxusd lightcmdusd"
+        default: "gbpusd usdchf usdcad"
       neu_aufbauen:
         description: "Vorhandene data/fx-Dateien vorher LOESCHEN? (ja/nein)"
         required: true
@@ -75,6 +75,14 @@ on:
 
 permissions:
   contents: write
+
+# Mehrere Laeufe schreiben in denselben Branch. Ohne diese Gruppe pusht der
+# erste erfolgreich und die uebrigen brechen am Konflikt ab - die bereits
+# heruntergeladenen Daten sind dann verloren. Mit der Gruppe warten sie
+# aufeinander, statt sich gegenseitig abzuschiessen.
+concurrency:
+  group: dukascopy-backfill
+  cancel-in-progress: false
 
 jobs:
   backfill:
@@ -375,6 +383,8 @@ jobs:
           PY
 
       - name: Commit
+        env:
+          INSTR: ${{ github.event.inputs.instrumente }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -382,7 +392,17 @@ jobs:
           git add -A data/fx
           if git diff --staged --quiet; then
             echo "Keine Aenderungen."
-          else
-            git commit -m "Dukascopy H1 Backfill ohne Flats (Phantom-Bars entfernt)"
-            git push
+            exit 0
           fi
+          git commit -m "Dukascopy H1 Backfill: ${INSTR}"
+          # Bis zu fuenf Push-Versuche mit Rebase dazwischen. Hat ein
+          # anderer Lauf zwischenzeitlich gepusht, wird neu aufgesetzt
+          # statt abzubrechen.
+          for V in 1 2 3 4 5; do
+            if git push; then echo "Push erfolgreich (Versuch $V)"; exit 0; fi
+            echo "Push fehlgeschlagen, rebase und erneut (Versuch $V)"
+            git pull --rebase origin "${GITHUB_REF_NAME}" || exit 1
+            sleep 5
+          done
+          echo "Push nach fuenf Versuchen fehlgeschlagen."
+          exit 1
