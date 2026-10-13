@@ -1,0 +1,86 @@
+# Aktien-Tageskurse laden (Yahoo Finance) fuer alle Ticker aus data/sp500_members.csv
+#
+# Ablage im Repo:   .github/workflows/aktien-kurse.yml
+# Das Skript dazu:  tools/lade_aktien.py
+#
+# Start: Reiter "Actions" -> "Aktien-Kurse laden" -> "Run workflow".
+# Ergebnis:
+#   1) Artefakt "aktien-kurse" (ZIP, 14 Tage abrufbar) - Standard, belastet das Repo nicht
+#   2) optional Commit nach data/stocks (Eingabe "commit" = ja)
+#
+# Schreibt NUR nach data/stocks und beruehrt data/fx nicht.
+
+name: Aktien-Kurse laden
+
+on:
+  workflow_dispatch:
+    inputs:
+      von_jahr:
+        description: "Startjahr"
+        required: true
+        default: "2004"
+      modus:
+        description: "aktuell = heutige Indexmitglieder | alle = jeder Ticker, der je im Index war"
+        required: true
+        default: "aktuell"
+      zusatz:
+        description: "Zusaetzliche Ticker (Komma-getrennt), z.B. SPY,QQQ,IWM"
+        required: false
+        default: ""
+      commit:
+        description: "Ergebnis zusaetzlich in data/stocks committen? (ja/nein)"
+        required: true
+        default: "nein"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: aktien-kurse
+  cancel-in-progress: false
+
+jobs:
+  laden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install yfinance pandas
+
+      - name: Kurse laden
+        env:
+          VON: ${{ github.event.inputs.von_jahr }}
+          MODUS: ${{ github.event.inputs.modus }}
+          ZUSATZ: ${{ github.event.inputs.zusatz }}
+        run: |
+          python tools/lade_aktien.py --von "$VON" --modus "$MODUS" --zusatz "$ZUSATZ"
+
+      - name: Ergebnis als Artefakt sichern
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aktien-kurse
+          path: data/stocks/
+          retention-days: 14
+
+      - name: Commit (nur bei commit = ja)
+        env:
+          COMMIT: ${{ github.event.inputs.commit }}
+        run: |
+          if [ "$COMMIT" != "ja" ]; then echo "commit = $COMMIT -> nur Artefakt."; exit 0; fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A data/stocks
+          if git diff --staged --quiet; then echo "Keine Aenderungen."; exit 0; fi
+          git commit -m "Aktien-Kurse laden (Yahoo, Tagesbasis)"
+          for V in 1 2 3 4 5; do
+            if git push; then echo "Push erfolgreich (Versuch $V)"; exit 0; fi
+            git pull --rebase origin "${GITHUB_REF_NAME}" || exit 1
+            sleep 5
+          done
+          echo "Push nach fuenf Versuchen fehlgeschlagen."; exit 1
