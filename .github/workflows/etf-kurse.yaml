@@ -1,0 +1,64 @@
+# ETF-Tageskurse laden (Yahoo Finance) -> data/etf
+# Ablage im Repo:  .github/workflows/etf-kurse.yml
+# Skripte dazu:    tools/lade_etf.py  und  tools/lade_aktien.py (liegt schon dort)
+# Start: Reiter "Actions" -> "ETF-Kurse laden" -> "Run workflow".
+# Ergebnis: Artefakt "etf-kurse" (ZIP, 14 Tage) - Commit nach data/etf nur bei commit = ja.
+
+name: ETF-Kurse laden
+
+on:
+  workflow_dispatch:
+    inputs:
+      von_jahr:
+        description: "Startjahr"
+        required: true
+        default: "2000"
+      commit:
+        description: "Ergebnis zusaetzlich in data/etf committen? (ja/nein)"
+        required: true
+        default: "nein"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: etf-kurse
+  cancel-in-progress: false
+
+jobs:
+  laden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install yfinance pandas
+      - name: ETFs laden
+        env:
+          VON: ${{ github.event.inputs.von_jahr }}
+        run: python tools/lade_etf.py --von "$VON"
+      - name: Ergebnis als Artefakt sichern
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etf-kurse
+          path: data/etf/
+          retention-days: 14
+      - name: Commit (nur bei commit = ja)
+        env:
+          COMMIT: ${{ github.event.inputs.commit }}
+        run: |
+          if [ "$COMMIT" != "ja" ]; then echo "commit = $COMMIT -> nur Artefakt."; exit 0; fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A data/etf
+          if git diff --staged --quiet; then echo "Keine Aenderungen."; exit 0; fi
+          git commit -m "ETF-Kurse laden (Yahoo, Tagesbasis)"
+          for V in 1 2 3 4 5; do
+            if git push; then echo "Push erfolgreich (Versuch $V)"; exit 0; fi
+            git pull --rebase origin "${GITHUB_REF_NAME}" || exit 1
+            sleep 5
+          done
+          echo "Push fehlgeschlagen."; exit 1
