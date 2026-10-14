@@ -1,34 +1,14 @@
-# Dukascopy Minuten-Daten (5 und 15 Minuten, Bid + Ask) -> Artefakt (kein Commit, Dateien sind gross)
-#
-# Ablage im Repo:  .github/workflows/minuten-daten.yml
-# Start: Reiter "Actions" -> "Minuten-Daten laden" -> "Run workflow".
-# Ergebnis: je Auftrag ein Artefakt "min-<instrument>-<zeitrahmen>" (14 Tage abrufbar),
-#           enthaelt data/min/<INSTRUMENT>_<zeitrahmen>.csv.gz
-# Schreibt NICHTS ins Repo und beruehrt data/fx nicht.
-#
-# Verfuegbarkeit (ca.): FX ab 2003, usa500idxusd ab 2011-09, deuidxeur ab 2013-09.
-# Jahre davor laufen leer durch, das ist kein Fehler.
-
 name: Minuten-Daten laden
-
 on:
   workflow_dispatch:
     inputs:
       auftraege:
-        description: "Auftraege 'instrument:zeitrahmen', durch Leerzeichen getrennt (zeitrahmen m5 oder m15)"
-        required: true
-        default: "eurusd:m15 usdjpy:m15 deuidxeur:m15 usa500idxusd:m15 eurusd:m5 usdjpy:m5"
+        description: "instrument:zeitraeume, Leerzeichen-getrennt"
+        default: "eurusd:m15,m5 usdjpy:m15,m5 deuidxeur:m15 usa500idxusd:m15"
       von_jahr:
-        description: "Startjahr"
-        required: true
         default: "2012"
       bis_jahr:
-        description: "Endjahr (einschliesslich)"
-        required: true
         default: "2026"
-
-permissions:
-  contents: read
 
 jobs:
   plan:
@@ -37,149 +17,49 @@ jobs:
       matrix: ${{ steps.m.outputs.matrix }}
     steps:
       - id: m
-        env:
-          AUFTRAEGE: ${{ github.event.inputs.auftraege }}
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os
-          liste = []
-          for a in os.environ["AUFTRAEGE"].split():
-              inst, tf = a.lower().split(":")
-              assert tf in ("m5", "m15"), a
-              liste.append({"inst": inst, "tf": tf})
-          print("matrix=" + json.dumps({"include": liste}))
+          items = []
+          for a in "${{ inputs.auftraege }}".split():
+              i, t = a.split(":")
+              items.append({"inst": i, "tfs": t})
+          print("matrix=" + json.dumps({"include": items}))
           PY
 
   laden:
     needs: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 340
     strategy:
       fail-fast: false
-      max-parallel: 2
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: |
-          # Version festgelegt: ab 1.49 nutzt das Tool eine neue Schnittstelle, die bei Minutendaten Status 202 liefert.
-          npm install -g dukascopy-node@1.46.4
-          dukascopy-node --help | head -3
-          pip install pandas
-
-      - name: Schnelltest (eine Woche, zeigt den Fehler sofort)
-        env:
-          INST: ${{ matrix.inst }}
-          TF:   ${{ matrix.tf }}
+      - run: pip install pandas
+      - name: Skript bereitstellen
         run: |
-          mkdir -p probe
-          set +e
-          dukascopy-node -i "$INST" -from 2024-03-04 -to 2024-03-09 -t "$TF" -p bid -f csv -v \
-            -dir probe -fn probe.csv -r 5 -rp 5000 -re
-          echo "--- Exit-Code: $?"
-          ls -la probe || true
-          head -3 probe/probe.csv 2>/dev/null || true
-          if [ ! -s probe/probe.csv ] || [ $(wc -l < probe/probe.csv) -lt 100 ]; then
-            echo "SCHNELLTEST FEHLGESCHLAGEN: Dukascopy liefert fuer $INST $TF nichts. Abbruch (spart Stunden)."
-            exit 1
-          fi
-          echo "Schnelltest ok: $(wc -l < probe/probe.csv) Zeilen"
-
-      - name: Herunterladen (monatsweise, Bid und Ask)
-        env:
-          INST: ${{ matrix.inst }}
-          TF:   ${{ matrix.tf }}
-          VON:  ${{ github.event.inputs.von_jahr }}
-          BIS:  ${{ github.event.inputs.bis_jahr }}
-        run: |
-          mkdir -p roh
-          if [ "$TF" = "m5" ]; then MINZ=1500; else MINZ=500; fi
-          holen() {   # $1 PT  $2 JAHR  $3 MONAT  $4 Versuchsnummer
-            local PT=$1 J=$2 M=$3
-            local MM=$(printf "%02d" $M)
-            local NJ=$J NM=$((M+1)); if [ $NM -eq 13 ]; then NM=1; NJ=$((J+1)); fi
-            local NMM=$(printf "%02d" $NM)
-            local ZIEL="roh/${INST}_${PT}_${J}-${MM}.csv"
-            if [ -s "$ZIEL" ] && [ $(wc -l < "$ZIEL") -gt $MINZ ]; then return 0; fi
-            rm -f "$ZIEL"
-            dukascopy-node -i "$INST" -from "${J}-${MM}-01" -to "${NJ}-${NMM}-01" \
-              -t "$TF" -p "$PT" -f csv -v -dir roh -fn "${INST}_${PT}_${J}-${MM}.csv" \
-              -r 5 -re -bs 3 -bp 3000 || echo "FEHLGESCHLAGEN: $INST $PT ${J}-${MM}"
-          }
-          for J in $(seq $VON $BIS); do
-            for M in 1 2 3 4 5 6 7 8 9 10 11 12; do
-              for PT in bid ask; do holen $PT $J $M; done
-              sleep 1
-            done
-            echo "$INST $TF: Jahr $J fertig"
-          done
-          # Nachholen (bis zu 3 Durchgaenge)
-          for V in 1 2 3; do
-            FEHL=0
-            for J in $(seq $VON $BIS); do for M in 1 2 3 4 5 6 7 8 9 10 11 12; do
-              MM=$(printf "%02d" $M)
-              for PT in bid ask; do
-                Z="roh/${INST}_${PT}_${J}-${MM}.csv"
-                if [ ! -s "$Z" ] || [ $(wc -l < "$Z") -le $MINZ ]; then
-                  # Monate vor Marktstart sind erwartbar leer: nur zaehlen, wenn Nachbarjahr Daten hat
-                  FEHL=$((FEHL+1)); holen $PT $J $M; sleep 3
-                fi
-              done
-            done; done
-            echo "Nachholdurchgang $V: $FEHL Kandidaten"
-          done
-
-      - name: Zusammenfuehren
-        env:
-          INST: ${{ matrix.inst }}
-          TF:   ${{ matrix.tf }}
+          if [ ! -f tools/lade_minuten.py ]; then echo "tools/lade_minuten.py fehlt im Repo"; exit 1; fi
+      - name: Schnelltest (1 Tag)
         run: |
           python3 - <<'PY'
-          import glob, os
-          import pandas as pd
-          inst, tf = os.environ["INST"], os.environ["TF"]
-          os.makedirs("data/min", exist_ok=True)
-          teile = {}
-          for pt in ("bid", "ask"):
-              frames = []
-              for f in sorted(glob.glob(f"roh/{inst}_{pt}_*.csv")):
-                  if os.path.getsize(f) < 500: continue
-                  try: d = pd.read_csv(f)
-                  except Exception: continue
-                  if d.empty or len(d.columns) < 5: continue
-                  d.columns = [c.strip().lower() for c in d.columns]
-                  d["ts"] = pd.to_datetime(d[d.columns[0]].astype("int64"), unit="ms", utc=True)
-                  frames.append(d)
-              if not frames: raise SystemExit(f"{inst} {pt}: keine Daten")
-              df = pd.concat(frames, ignore_index=True)
-              cols = [c for c in ["open","high","low","close","volume"] if c in df]
-              df = df[["ts"] + cols].rename(columns={c: f"{pt}_{c}" for c in cols})
-              teile[pt] = df.drop_duplicates("ts", keep="last")
-          g = teile["bid"].merge(teile["ask"], on="ts", how="inner").sort_values("ts").reset_index(drop=True)
-          vor = len(g)
-          for c in ("bid_volume", "ask_volume"):      # Phantom-Bars ohne Tick entfernen
-              if c in g: g = g[g[c].fillna(0) > 0]
-          g = g[(g.bid_close > 0) & (g.ask_close > 0) & (g.ask_close >= g.bid_close)].reset_index(drop=True)
-          print(f"{inst} {tf}: {vor} Bars, nach Filter {len(g)} ({(vor-len(g))/max(vor,1)*100:.1f} % entfernt)")
-          g["spread"] = g.ask_close - g.bid_close
-          wd = g.ts.dt.dayofweek
-          print("Samstagsbars:", int((wd == 5).sum()), "| Nullspannen:", int((g.bid_high == g.bid_low).sum()))
-          print(g.groupby(g.ts.dt.year).size().to_string())
-          pfad = f"data/min/{inst.upper()}_{tf}.csv.gz"
-          g.to_csv(pfad, index=False, compression="gzip", float_format="%.6f")
-          print("geschrieben:", pfad, round(os.path.getsize(pfad)/1e6,1), "MB")
-          if len(g) < 50000: raise SystemExit("Zu wenige Bars - Download pruefen")
+          import sys; sys.path.insert(0, "tools")
+          import lade_minuten as L, pandas as pd, datetime as dt
+          inst = "${{ matrix.inst }}".upper()
+          for s in ("BID", "ASK"):
+              d, s, df = L.tag(inst, dt.date(2024, 3, 5), s, L.FAKTOR[inst])
+              if isinstance(df, str) or df is None:
+                  sys.exit(f"Schnelltest {inst} {s} fehlgeschlagen: {df}")
+              print(inst, s, len(df)); print(df.head(3)); print(df.tail(2))
           PY
-
-      - name: Ergebnis sichern
+      - name: Download und Aggregation
+        run: python3 tools/lade_minuten.py "${{ matrix.inst }}" "${{ inputs.von_jahr }}" "${{ inputs.bis_jahr }}" "${{ matrix.tfs }}" data/min
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: min-${{ matrix.inst }}-${{ matrix.tf }}
+          name: min-${{ matrix.inst }}
           path: data/min/
-          retention-days: 14
           if-no-files-found: warn
