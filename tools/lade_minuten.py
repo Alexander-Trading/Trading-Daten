@@ -11,7 +11,8 @@ import pandas as pd
 
 BASE = "https://datafeed.dukascopy.com/datafeed"
 FAKTOR = {"EURUSD": 1e5, "USDJPY": 1e3, "DEUIDXEUR": 1e3, "USA500IDXUSD": 1e3}
-TIMEOUT, RETRIES = 60, 8
+TIMEOUT, RETRIES = 12, 14
+DEADLINE = time.time() + float(os.environ.get("DEADLINE_MIN", "300")) * 60
 lock = threading.Lock()
 stat = {"ok": 0, "leer": 0, "fehler": 0}
 
@@ -19,17 +20,19 @@ stat = {"ok": 0, "leer": 0, "fehler": 0}
 def hole(url):
     """Gibt bytes zurueck (leer = kein Handel), None = endgueltig fehlgeschlagen."""
     for v in range(RETRIES):
+        if time.time() > DEADLINE:
+            return None
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=TIMEOUT) as r:
                 if r.status == 200:
                     return r.read()
-                time.sleep(2 + v * 3)
+                time.sleep(min(1 + v, 5))
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 return b""
-            time.sleep(2 + v * 3)
+            time.sleep(min(1 + v, 5))
         except Exception:
-            time.sleep(2 + v * 3)
+            time.sleep(min(1 + v, 5))
     return None
 
 
@@ -78,7 +81,7 @@ def lade(instr, y0, y1, tfs, out):
     res = {"BID": [], "ASK": []}
     fehl = []
     t0 = time.time()
-    with ThreadPoolExecutor(8) as ex:
+    with ThreadPoolExecutor(24) as ex:
         futs = [ex.submit(tag, instr, d, s, faktor) for d, s in auftraege]
         for i, f in enumerate(futs):
             d, s, df = f.result()
@@ -106,11 +109,11 @@ def lade(instr, y0, y1, tfs, out):
             "a_o": g.a_o.first(), "a_h": g.a_h.max(), "a_l": g.a_l.min(), "a_c": g.a_c.last(),
             "vol": g.vol.sum()}).dropna(subset=["b_o"])
         r["spread_c"] = r.a_c - r.b_c
-        p = os.path.join(out, f"{instr}_{tf}.csv.gz")
+        p = os.path.join(out, f"{instr}_{tf}_{y0}-{y1}.csv.gz")
         r.to_csv(p, compression="gzip", index_label="time", float_format="%.6g")
         print(p, len(r), r.index.min(), r.index.max(), flush=True)
     if fehl:
-        pd.Series([f"{d} {s}" for d, s in fehl]).to_csv(os.path.join(out, f"{instr}_fehlende_tage.txt"), index=False, header=False)
+        pd.Series([f"{d} {s}" for d, s in fehl]).to_csv(os.path.join(out, f"{instr}_{y0}-{y1}_fehlende_tage.txt"), index=False, header=False)
 
 
 if __name__ == "__main__":
