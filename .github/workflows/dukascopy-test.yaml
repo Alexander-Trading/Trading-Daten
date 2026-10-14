@@ -1,0 +1,41 @@
+# Diagnose: erreicht GitHub die Dukascopy-Server, und welche Dateien liefern sie?
+# Ablage im Repo:  .github/workflows/dukascopy-test.yml
+# Start: Actions -> "Dukascopy Diagnose" -> Run workflow. Dauer: unter einer Minute. Schreibt nichts ins Repo.
+name: Dukascopy Diagnose
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Feste Datendateien (alte Schnittstelle, Monat Maerz = 02)
+        run: |
+          t() { printf "%-95s " "$1"; curl -sS -m 30 -o /tmp/x -w "HTTP %{http_code}  %{size_download} Byte\n" -A "Mozilla/5.0" "$1" || echo "Fehler"; }
+          B=https://datafeed.dukascopy.com/datafeed/EURUSD
+          t "$B/2024/02/05/BID_candles_min_1.bi5"
+          t "$B/2024/02/05/ASK_candles_min_1.bi5"
+          t "$B/2024/02/BID_candles_hour_1.bi5"
+          t "$B/2024/02/05/10h_ticks.bi5"
+          t "$B/2020/02/05/BID_candles_min_1.bi5"
+          t "$B/2015/02/05/BID_candles_min_1.bi5"
+      - name: Neue Schnittstelle
+        run: |
+          for U in "https://jetta.dukascopy.com/v1/candles/minute/EUR-USD/BID/2024/3/5" \
+                   "https://jetta.dukascopy.com/v1/candles/hour/EUR-USD/BID/2024/3" \
+                   "https://jetta.dukascopy.com/v1/candles/minute/EURUSD/BID/2024/3/5"; do
+            printf "%-85s " "$U"; curl -sS -m 30 -o /tmp/y -w "HTTP %{http_code}  %{size_download} Byte\n" -A "Mozilla/5.0" "$U" || echo "Fehler"
+          done
+      - name: Mit dukascopy-node (H1, 1.46.4)
+        run: |
+          npm install -g dukascopy-node@1.46.4 >/dev/null 2>&1
+          set +e
+          dukascopy-node -i eurusd -from 2024-03-04 -to 2024-03-09 -t h1 -p bid -f csv -dir t1 -fn h1.csv -r 2 -rp 3000
+          echo "Exit h1: $?"; ls -la t1; head -3 t1/*.csv
+          dukascopy-node -i eurusd -from 2024-03-05 -to 2024-03-06 -t m1 -p bid -f csv -dir t2 -fn m1.csv -r 2 -rp 3000
+          echo "Exit m1: $?"; ls -la t2; head -3 t2/*.csv
