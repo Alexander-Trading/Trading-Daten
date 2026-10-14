@@ -56,7 +56,7 @@ jobs:
     timeout-minutes: 350
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 2
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/setup-node@v4
@@ -68,6 +68,24 @@ jobs:
       - run: |
           npm install -g dukascopy-node
           pip install pandas
+
+      - name: Schnelltest (eine Woche, zeigt den Fehler sofort)
+        env:
+          INST: ${{ matrix.inst }}
+          TF:   ${{ matrix.tf }}
+        run: |
+          mkdir -p probe
+          set +e
+          dukascopy-node -i "$INST" -from 2024-03-04 -to 2024-03-09 -t "$TF" -p bid -f csv -v \
+            -dir probe -fn probe.csv -r 3 -re
+          echo "--- Exit-Code: $?"
+          ls -la probe || true
+          head -3 probe/probe.csv 2>/dev/null || true
+          if [ ! -s probe/probe.csv ] || [ $(wc -l < probe/probe.csv) -lt 100 ]; then
+            echo "SCHNELLTEST FEHLGESCHLAGEN: Dukascopy liefert fuer $INST $TF nichts. Abbruch (spart Stunden)."
+            exit 1
+          fi
+          echo "Schnelltest ok: $(wc -l < probe/probe.csv) Zeilen"
 
       - name: Herunterladen (monatsweise, Bid und Ask)
         env:
@@ -88,7 +106,7 @@ jobs:
             rm -f "$ZIEL"
             dukascopy-node -i "$INST" -from "${J}-${MM}-01" -to "${NJ}-${NMM}-01" \
               -t "$TF" -p "$PT" -f csv -v -dir roh -fn "${INST}_${PT}_${J}-${MM}.csv" \
-              -r 8 -re -bs 5 -bp 2000 --silent || echo "FEHLGESCHLAGEN: $INST $PT ${J}-${MM}"
+              -r 5 -re -bs 3 -bp 3000 || echo "FEHLGESCHLAGEN: $INST $PT ${J}-${MM}"
           }
           for J in $(seq $VON $BIS); do
             for M in 1 2 3 4 5 6 7 8 9 10 11 12; do
